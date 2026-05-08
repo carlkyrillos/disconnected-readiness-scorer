@@ -1,0 +1,6 @@
+exceptions: []
+# Example:
+# - repo: opendatahub-io/odh-dashboard
+#   rule: no-runtime-egress
+#   path: frontend/src/utilities/fetch.ts
+#   reason: "Uses cluster-internal API proxy, not external egress"
