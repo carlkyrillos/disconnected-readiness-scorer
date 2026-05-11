@@ -6,10 +6,13 @@ Score a repository's readiness for deployment in disconnected / air-gapped OpenS
 
 Scans a repository for common patterns that break disconnected deployments:
 
-1. **Image manifest completeness** — every container image referenced in code must appear in the CSV `relatedImages` or disconnected-helper manifest.
-2. **Digest enforcement** — image references must use `@sha256:` digests, not mutable tags.
-3. **Runtime egress detection** — flags code that makes outbound HTTP calls at runtime (as opposed to build time).
-4. **Python dependency validation** — ensures pip/import targets are available from bundled mirrors, not PyPI/GitHub.
+1. **Image manifest completeness** — every container image referenced in code must be accounted for in the disconnected image contract. Supports two patterns automatically: `RELATED_IMAGE_*` env vars (used by the opendatahub-operator) and static CSV `relatedImages` lists.
+2. **Operator manifest parser** — extracts the authoritative image manifest from the opendatahub-operator source (100+ `RELATED_IMAGE_*` env vars across 18 components). This is the source of truth for what images must be mirrorable.
+3. **Digest enforcement** — image references must use `@sha256:` digests, not mutable tags.
+4. **Runtime egress detection** — flags code that makes outbound HTTP calls at runtime (as opposed to build time).
+5. **Python dependency validation** — ensures pip/import targets are available from bundled mirrors, not PyPI/GitHub.
+
+All rules exclude test files (`*_test.go`, `test/`, `testdata/`), CI config (`.github/`, `.tekton/`), and linting rules (`semgrep.yaml`) from blocker-level findings.
 
 ## Usage
 

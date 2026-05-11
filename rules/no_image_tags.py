@@ -10,7 +10,10 @@ IMAGE_REF_PATTERN = re.compile(
 )
 
 PRODUCTION_DIRS = {"manifests", "deploy", "config", "bundle", "helm", "chart", "kustomize"}
-TEST_DIRS = {"test", "tests", "e2e", "hack", "ci", "testdata"}
+TEST_DIRS = {"test", "tests", "e2e", "hack", "testdata"}
+CI_DIRS = {".github", ".tekton", "ci"}
+TEST_SUFFIXES = {"_test.go", "_int_test.go", "_internal_test.go"}
+SKIP_FILES = {"semgrep.yaml", "semgrep.yml", ".semgrep.yml"}
 
 
 @dataclass
@@ -29,12 +32,19 @@ class RuleResult:
     findings: list = field(default_factory=list)
 
 
-def is_test_file(filepath: Path) -> bool:
-    return any(d in filepath.parts for d in TEST_DIRS)
+def is_excluded_file(filepath: Path) -> bool:
+    """Files that should never produce blocker findings."""
+    if filepath.name in SKIP_FILES:
+        return True
+    if any(filepath.name.endswith(s) for s in TEST_SUFFIXES):
+        return True
+    if any(d in filepath.parts for d in TEST_DIRS | CI_DIRS):
+        return True
+    return False
 
 
 def is_production_file(filepath: Path) -> bool:
-    return any(d in filepath.parts for d in PRODUCTION_DIRS)
+    return any(d in filepath.parts for d in PRODUCTION_DIRS) and not is_excluded_file(filepath)
 
 
 def scan_file(filepath: Path, root: Path) -> list[Finding]:
@@ -58,7 +68,12 @@ def scan_file(filepath: Path, root: Path) -> list[Finding]:
                 continue
 
             relative = str(filepath.relative_to(root))
-            severity = "blocker" if is_production_file(filepath) else "warning"
+            if is_excluded_file(filepath):
+                severity = "info"
+            elif is_production_file(filepath):
+                severity = "blocker"
+            else:
+                severity = "warning"
 
             findings.append(Finding(
                 severity=severity,
