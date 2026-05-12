@@ -3,7 +3,25 @@
 
 import re
 from pathlib import Path
-from dataclasses import dataclass, field
+
+try:
+    from rules.common import Finding, RuleResult
+except ImportError:
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class Finding:
+        severity: str
+        file: str
+        line: int
+        image: str
+        message: str
+
+    @dataclass
+    class RuleResult:
+        rule: str = "no-image-tags"
+        passed: bool = True
+        findings: list = field(default_factory=list)
 
 IMAGE_REF_PATTERN = re.compile(
     r'((?:[\w.\-]+(?:\.[\w.\-]+)+(?::\d+)?/)?[\w.\-]+/[\w.\-]+)([:@][\w.\-:]+)'
@@ -14,22 +32,6 @@ TEST_DIRS = {"test", "tests", "e2e", "hack", "testdata"}
 CI_DIRS = {".github", ".tekton", "ci"}
 TEST_SUFFIXES = {"_test.go", "_int_test.go", "_internal_test.go"}
 SKIP_FILES = {"semgrep.yaml", "semgrep.yml", ".semgrep.yml"}
-
-
-@dataclass
-class Finding:
-    severity: str
-    file: str
-    line: int
-    image: str
-    message: str
-
-
-@dataclass
-class RuleResult:
-    rule: str = "no-image-tags"
-    passed: bool = True
-    findings: list = field(default_factory=list)
 
 
 def is_excluded_file(filepath: Path) -> bool:
@@ -89,7 +91,7 @@ def scan_file(filepath: Path, root: Path) -> list[Finding]:
 
 def run(repo_root: str) -> RuleResult:
     root = Path(repo_root)
-    result = RuleResult()
+    result = RuleResult(rule="no-image-tags")
     skip_dirs = {".git", "vendor", "node_modules", "__pycache__"}
     extensions = {".go", ".py", ".yaml", ".yml", ".json", ".toml"}
 
