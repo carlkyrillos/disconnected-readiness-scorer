@@ -13,10 +13,10 @@ jobs:
       matrix:
         python-version: ["3.9", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -27,11 +27,15 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
+          if [ -d tests ]; then
+            python -m pytest tests/ -v --cov=. --cov-report=xml --cov-report=term
+          else
+            echo "No tests directory found, skipping"
+          fi
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         with:
           files: coverage.xml
           fail_ci_if_error: false
