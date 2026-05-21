@@ -23,8 +23,23 @@ except ModuleNotFoundError:
     from common import Finding, RuleResult
 
 IMAGE_REF_PATTERN = re.compile(
-    r'(?:image:\s*|"image":\s*"|FROM\s+)'
+    r'(?:'
+    r'image:\s*'
+    r'|"image":\s*"'
+    r'|FROM\s+'
+    r'|newName:\s*'
+    r'|imageUrl:\s*'
+    r'|image_url:\s*'
+    r')'
     r'((?:[\w.\-]+(?:\.[\w.\-]+)+(?::\d+)?/)?[\w.\-]+/[\w.\-]+(?:[:@][\w.\-:]+)?)'
+)
+
+GO_IMAGE_ASSIGN_PATTERN = re.compile(
+    r'(?:'
+    r'[:=]\s*"'
+    r"|export\s+\w+=\s*"
+    r')'
+    r'([\w.\-]+\.[\w.\-]+(?::\d+)?/[\w.\-]+/[\w.\-]+(?:[:@][\w.\-:]+)?)'
 )
 
 DIGEST_PATTERN = re.compile(r'@sha256:[a-f0-9]{64}')
@@ -95,6 +110,33 @@ def extract_related_image_vars(repo_root: Path) -> set[str]:
     return env_vars
 
 
+def _build_file_related_image_map(
+    file_lines_cache: dict[Path, list[str]],
+) -> tuple[dict[Path, set[str]], dict[Path, set[str]]]:
+    """Build maps of RELATED_IMAGE vars at file and directory level.
+
+    Returns:
+        file_vars: filepath -> set of RELATED_IMAGE vars in that file
+        dir_vars:  directory -> union of RELATED_IMAGE vars across all files in that dir
+    """
+    file_vars: dict[Path, set[str]] = {}
+    dir_vars: dict[Path, set[str]] = {}
+    for filepath, lines in file_lines_cache.items():
+        vars_in_file: set[str] = set()
+        full_content = "\n".join(lines)
+        for match in RELATED_IMAGE_PATTERN.finditer(full_content):
+            var = match.group()
+            if var != "RELATED_IMAGE_*":
+                vars_in_file.add(var)
+        if vars_in_file:
+            file_vars[filepath] = vars_in_file
+            parent = filepath.parent
+            if parent not in dir_vars:
+                dir_vars[parent] = set()
+            dir_vars[parent] |= vars_in_file
+    return file_vars, dir_vars
+
+
 def extract_static_related_images(repo_root: Path) -> set[str]:
     """Extract image refs from CSV relatedImages section."""
     try:
@@ -135,7 +177,7 @@ def normalize_image(ref: str) -> str:
 
 def scan_for_image_refs(repo_root: Path) -> list[tuple[Path, int, str]]:
     """Scan source files for container image references."""
-    extensions = {".go", ".py", ".yaml", ".yml", ".json"}
+    extensions = {".go", ".py", ".yaml", ".yml", ".json", ".sh"}
     results = []
 
     for filepath in repo_root.rglob("*"):
@@ -150,10 +192,13 @@ def scan_for_image_refs(repo_root: Path) -> list[tuple[Path, int, str]]:
             continue
 
         for i, line in enumerate(lines, 1):
-            for match in IMAGE_REF_PATTERN.finditer(line):
-                img = match.group(1).strip().strip('"').strip("'")
-                if "/" in img and not img.startswith("#"):
-                    results.append((filepath, i, img))
+            seen: set[str] = set()
+            for pattern in (IMAGE_REF_PATTERN, GO_IMAGE_ASSIGN_PATTERN):
+                for match in pattern.finditer(line):
+                    img = match.group(1).strip().strip('"').strip("'")
+                    if "/" in img and not img.startswith("#") and img not in seen:
+                        seen.add(img)
+                        results.append((filepath, i, img))
 
     return results
 
@@ -193,29 +238,77 @@ def check_env_var_pattern(
     image_refs = scan_for_image_refs(repo_root)
     file_lines_cache: dict[Path, list[str]] = {}
 
+    dirs_with_refs: set[Path] = set()
+    for filepath, _ln, _img in image_refs:
+        if filepath not in file_lines_cache:
+            try:
+                file_lines_cache[filepath] = filepath.read_text().splitlines()
+            except (OSError, UnicodeDecodeError):
+                file_lines_cache[filepath] = []
+        dirs_with_refs.add(filepath.parent)
+
+    for d in dirs_with_refs:
+        for go_file in d.glob("*.go"):
+            if go_file not in file_lines_cache:
+                try:
+                    file_lines_cache[go_file] = go_file.read_text().splitlines()
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+    file_related_vars, dir_related_vars = _build_file_related_image_map(
+        file_lines_cache,
+    )
+
     for filepath, line_num, image in image_refs:
         excluded = is_excluded_file(filepath)
 
         try:
-            if filepath not in file_lines_cache:
-                file_lines_cache[filepath] = filepath.read_text().splitlines()
             line_content = file_lines_cache[filepath][line_num - 1]
-        except (OSError, IndexError):
+        except (IndexError, KeyError):
             line_content = ""
 
         related_vars = RELATED_IMAGE_PATTERN.findall(line_content)
 
         if not related_vars:
+            file_vars = file_related_vars.get(filepath, set())
+            dir_vars = (
+                dir_related_vars.get(filepath.parent, set())
+                if not file_vars
+                else set()
+            )
+
             relative = str(filepath.relative_to(repo_root))
-            severity = "info" if excluded else "warning"
-            result.findings.append(Finding(
-                severity=severity,
-                file=relative,
-                line=line_num,
-                image=image,
-                message=f"Image '{image}' has no RELATED_IMAGE_* mapping on this line. "
-                        f"Verify it is covered by an env var elsewhere.",
-            ))
+            if file_vars:
+                result.findings.append(Finding(
+                    severity="info",
+                    file=relative,
+                    line=line_num,
+                    image=image,
+                    message=f"Image '{image}' has no same-line RELATED_IMAGE_* mapping, "
+                            f"but file contains {', '.join(sorted(file_vars))}. "
+                            f"Likely covered by env var injection.",
+                ))
+            elif dir_vars and filepath.suffix == ".go":
+                result.findings.append(Finding(
+                    severity="info",
+                    file=relative,
+                    line=line_num,
+                    image=image,
+                    message=f"Image '{image}' has no same-line RELATED_IMAGE_* mapping, "
+                            f"but sibling files in same package reference "
+                            f"{', '.join(sorted(dir_vars))}. "
+                            f"Likely a fallback/default for env var injection.",
+                ))
+            else:
+                severity = "info" if excluded else "warning"
+                result.findings.append(Finding(
+                    severity=severity,
+                    file=relative,
+                    line=line_num,
+                    image=image,
+                    message=f"Image '{image}' has no RELATED_IMAGE_* mapping on this line. "
+                            f"Verify it is covered by an env var elsewhere.",
+                ))
         elif manifest_env_vars is not None:
             for var_name in related_vars:
                 if var_name not in manifest_env_vars:

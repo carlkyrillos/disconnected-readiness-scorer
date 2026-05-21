@@ -6,6 +6,7 @@ from rules.csv_relatedimages import (
     is_excluded_file, normalize_image, detect_image_pattern,
     extract_related_image_vars, extract_static_related_images,
     scan_for_image_refs, check_env_var_pattern, check_static_csv_pattern, run,
+    GO_IMAGE_ASSIGN_PATTERN,
 )
 
 
@@ -183,6 +184,138 @@ class TestScanForImageRefs:
         f = tmp_path / "file.txt"
         f.write_text("image: quay.io/org/img:v1")
         assert scan_for_image_refs(tmp_path) == []
+
+
+class TestScanForImageRefsExpanded:
+    """Tests for expanded image reference detection patterns."""
+
+    def test_finds_kustomize_newname(self, tmp_path):
+        f = tmp_path / "kustomization.yaml"
+        f.write_text("newName: quay.io/opendatahub/notebook-controller")
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 1
+        assert refs[0][2] == "quay.io/opendatahub/notebook-controller"
+
+    def test_finds_imageurl_key(self, tmp_path):
+        f = tmp_path / "deploy.yaml"
+        f.write_text("imageUrl: quay.io/opendatahub/model-mesh")
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 1
+        assert refs[0][2] == "quay.io/opendatahub/model-mesh"
+
+    def test_finds_image_url_snake_case(self, tmp_path):
+        f = tmp_path / "deploy.yaml"
+        f.write_text("image_url: quay.io/opendatahub/model-mesh")
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 1
+
+    def test_finds_go_assignment(self, tmp_path):
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "defaults.go").write_text(
+            'const DefaultImage = "quay.io/opendatahub/notebook-controller:latest"'
+        )
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 1
+        assert "quay.io/opendatahub/notebook-controller:latest" in refs[0][2]
+
+    def test_finds_go_short_decl(self, tmp_path):
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "img.go").write_text(
+            'img := "registry.redhat.io/rhoai/model-controller:v1"'
+        )
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 1
+
+    def test_go_path_not_matched(self, tmp_path):
+        """Go path strings without dots in the domain should NOT match."""
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "paths.go").write_text(
+            'const path = "internal/controller/components"'
+        )
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 0
+
+    def test_finds_shell_export(self, tmp_path):
+        f = tmp_path / "setup.sh"
+        f.write_text('export IMAGE="quay.io/opendatahub/odh-dashboard:latest"')
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 1
+
+    def test_kustomize_newtag_not_matched(self, tmp_path):
+        """newTag is just a tag string, not an image reference."""
+        f = tmp_path / "kustomization.yaml"
+        f.write_text("newTag: v1.2.3")
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 0
+
+    def test_no_duplicate_when_both_patterns_match(self, tmp_path):
+        """A line matching both primary and secondary pattern yields one result."""
+        f = tmp_path / "deploy.yaml"
+        f.write_text("image: quay.io/opendatahub/img:v1")
+        refs = scan_for_image_refs(tmp_path)
+        assert len(refs) == 1
+
+
+class TestFileLevelAwareness:
+    """Tests for file-level and directory-level RELATED_IMAGE awareness."""
+
+    def test_same_file_different_line_is_info(self, tmp_path):
+        """Image on different line from RELATED_IMAGE in same file -> info."""
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "images.go").write_text(
+            'img := os.Getenv("RELATED_IMAGE_FOO")\n'
+            'image: quay.io/org/fallback:v1\n'
+        )
+        result = check_env_var_pattern(tmp_path)
+        image_findings = [f for f in result.findings
+                          if f.image == "quay.io/org/fallback:v1"]
+        assert len(image_findings) == 1
+        assert image_findings[0].severity == "info"
+        assert "file contains" in image_findings[0].message
+
+    def test_sibling_go_file_is_info(self, tmp_path):
+        """Image in file A, RELATED_IMAGE in file B in same dir -> info."""
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "envvars.go").write_text('os.Getenv("RELATED_IMAGE_FOO")')
+        (pkg / "defaults.go").write_text(
+            'image: quay.io/org/img:v1'
+        )
+        result = check_env_var_pattern(tmp_path)
+        image_findings = [f for f in result.findings
+                          if f.image == "quay.io/org/img:v1"]
+        assert len(image_findings) == 1
+        assert image_findings[0].severity == "info"
+        assert "sibling" in image_findings[0].message
+
+    def test_no_related_image_nearby_is_warning(self, tmp_path):
+        """Image in isolated file with no RELATED_IMAGE nearby -> warning."""
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "images.go").write_text('"RELATED_IMAGE_FOO"')
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "deploy.yaml").write_text("image: quay.io/org/orphan:v1")
+        result = check_env_var_pattern(tmp_path)
+        orphan_findings = [f for f in result.findings if "orphan" in f.image]
+        assert len(orphan_findings) == 1
+        assert orphan_findings[0].severity == "warning"
+
+    def test_yaml_no_dir_level_awareness(self, tmp_path):
+        """YAML files should NOT benefit from directory-level Go heuristic."""
+        deploy = tmp_path / "deploy"
+        deploy.mkdir()
+        (deploy / "envvars.go").write_text('os.Getenv("RELATED_IMAGE_FOO")')
+        (deploy / "config.yaml").write_text("image: quay.io/org/img:v1")
+        result = check_env_var_pattern(tmp_path)
+        yaml_findings = [f for f in result.findings
+                         if f.file.endswith("config.yaml") and f.image]
+        for finding in yaml_findings:
+            assert finding.severity == "warning"
 
 
 class TestCheckEnvVarPattern:
