@@ -1,4 +1,4 @@
-[![codecov](https://codecov.io/gh/asanzgom/disconnected-readiness-scorer/graph/badge.svg?token=XE1XU6SQPB)](https://codecov.io/gh/asanzgom/disconnected-readiness-scorer)
+[![codecov](https://codecov.io/gh/opendatahub-io/disconnected-readiness-scorer/graph/badge.svg?token=XE1XU6SQPB)](https://codecov.io/gh/opendatahub-io/disconnected-readiness-scorer)
 
 # Disconnected Readiness Scorer
 
