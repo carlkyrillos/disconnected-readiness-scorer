@@ -41,7 +41,7 @@ Then from the root of any RHOAI component repo:
 
 - `--rules all` (default) — run all rules
 - `--rules csv,tags` — run only specified rules
-- `--fix` — attempt auto-remediation where possible (e.g., replace image tags with digests)
+- `--fix` — attempt auto-remediation for supported rules (e.g., replace image tags with digests)
 - `--report markdown` — output a markdown report (default)
 - `--report json` — output machine-readable JSON
 

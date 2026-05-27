@@ -14,7 +14,7 @@ No `requirements.txt` — install test/dev dependencies directly:
 pip install pytest pytest-cov pyyaml jinja2
 ```
 
-`pyyaml` and `jinja2` are optional at runtime (rules/report degrade gracefully without them) but required for full test coverage.
+`pyyaml` and `jinja2` are optional at runtime (rules/report degrade without them, skipping YAML-dependent checks) but required for full test coverage.
 
 ## Testing
 
@@ -96,4 +96,4 @@ All rules output JSON to stdout with `rule`, `passed`, and `findings` fields.
 
 - The `csv_relatedimages` rule detects the image management pattern (env var vs static CSV) automatically rather than requiring config. Threshold: 5+ `RELATED_IMAGE_*` occurrences in Go source → env var pattern.
 - `operator_manifest.py` shells out to `git clone --depth 1` (list form, no shell) to fetch the operator source. When no `--operator-path` is given, the orchestrator uses `tempfile.TemporaryDirectory()` for automatic cleanup. The repo URL is hardcoded to the upstream operator; it is never user-supplied.
-- Optional `yaml` import: rules that parse YAML gracefully degrade if PyYAML is not installed.
+- Optional `yaml` import: rules that parse YAML skip their checks if PyYAML is not installed.
