@@ -6,7 +6,6 @@ from rules.csv_relatedimages import (
     is_excluded_file, normalize_image, detect_image_pattern,
     extract_related_image_vars, extract_static_related_images,
     scan_for_image_refs, check_env_var_pattern, check_static_csv_pattern, run,
-    GO_IMAGE_ASSIGN_PATTERN,
 )
 
 
@@ -386,6 +385,34 @@ class TestFileLevelAwareness:
                         if f.image == "quay.io/org/img:v1"]
         assert len(img_findings) == 1
         assert img_findings[0].severity == "warning"
+
+
+    def test_test_file_sibling_does_not_downgrade(self, tmp_path):
+        """RELATED_IMAGE in a _test.go sibling should NOT downgrade to info."""
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "envvars_test.go").write_text('os.Getenv("RELATED_IMAGE_FOO")')
+        (pkg / "defaults.go").write_text('image: quay.io/org/img:v1')
+        result = check_env_var_pattern(tmp_path)
+        img_findings = [f for f in result.findings
+                        if f.image == "quay.io/org/img:v1"]
+        assert len(img_findings) == 1
+        assert img_findings[0].severity == "warning"
+
+    def test_unreadable_sibling_produces_info(self, tmp_path):
+        """Binary/unreadable sibling .go file produces an info finding."""
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "images.go").write_text(
+            'os.Getenv("RELATED_IMAGE_FOO")\n'
+            'image: quay.io/org/fallback:v1\n'
+        )
+        binary = pkg / "broken.go"
+        binary.write_bytes(b'\x80\x81\x82\x83')
+        result = check_env_var_pattern(tmp_path)
+        unreadable = [f for f in result.findings if "Could not read" in f.message]
+        assert len(unreadable) == 1
+        assert "broken.go" in unreadable[0].file
 
 
 class TestCheckEnvVarPattern:

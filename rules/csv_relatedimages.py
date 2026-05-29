@@ -137,10 +137,11 @@ def _build_file_related_image_map(
                 vars_in_file.add(var)
         if vars_in_file:
             file_vars[filepath] = vars_in_file
-            parent = filepath.parent
-            if parent not in dir_vars:
-                dir_vars[parent] = set()
-            dir_vars[parent] |= vars_in_file
+            if not is_excluded_file(filepath):
+                parent = filepath.parent
+                if parent not in dir_vars:
+                    dir_vars[parent] = set()
+                dir_vars[parent] |= vars_in_file
     return file_vars, dir_vars
 
 
@@ -266,7 +267,15 @@ def check_env_var_pattern(
                 try:
                     file_lines_cache[go_file] = go_file.read_text().splitlines()
                 except (OSError, UnicodeDecodeError):
-                    pass
+                    relative = str(go_file.relative_to(repo_root))
+                    result.findings.append(Finding(
+                        severity="info",
+                        file=relative,
+                        line=0,
+                        image="",
+                        message=f"Could not read sibling file '{relative}'; "
+                                f"its RELATED_IMAGE_* vars (if any) were not considered.",
+                    ))
 
     file_related_vars, dir_related_vars = _build_file_related_image_map(
         file_lines_cache,
@@ -294,9 +303,9 @@ def check_env_var_pattern(
             nearby_vars = file_vars or (dir_vars if filepath.suffix == ".go" else set())
             if manifest_env_vars is not None and nearby_vars:
                 nearby_vars = nearby_vars & manifest_env_vars
-            nearby_source = "file" if file_vars else "sibling"
 
             if nearby_vars:
+                nearby_source = "file" if file_vars else "sibling"
                 result.findings.append(Finding(
                     severity="info",
                     file=relative,
