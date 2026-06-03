@@ -5,9 +5,9 @@ import re
 from pathlib import Path
 
 try:
-    from rules.common import Finding, RuleResult
+    from rules.common import Finding, RuleResult, get_tracked_files
 except ModuleNotFoundError:
-    from common import Finding, RuleResult
+    from common import Finding, RuleResult, get_tracked_files
 
 EGRESS_PATTERNS = {
     ".go": [
@@ -39,7 +39,16 @@ EGRESS_PATTERNS = {
 
 BUILD_DIRS = {"Dockerfile", "Makefile", "Containerfile"}
 BUILD_PATHS = {".github", "ci", "hack", "build", "Dockerfile", "Makefile"}
-SKIP_DIRS = {".git", "vendor", "node_modules", "__pycache__", "test", "tests", "testdata"}
+SKIP_DIRS = {".git", "vendor", "node_modules", "__pycache__"}
+TEST_DIRS = {"test", "tests", "testdata", "e2e"}
+TEST_SUFFIXES = {"_test.go", "_test.py", ".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"}
+
+
+def is_test_file(filepath: Path) -> bool:
+    name = filepath.name
+    if any(name.endswith(s) for s in TEST_SUFFIXES) or name.startswith("test_"):
+        return True
+    return any(d in filepath.parts for d in TEST_DIRS)
 
 
 def is_build_context(filepath: Path) -> bool:
@@ -59,8 +68,11 @@ def has_configurable_url(line: str) -> bool:
 def run(repo_root: str) -> RuleResult:
     root = Path(repo_root)
     result = RuleResult(rule="no-runtime-egress")
+    tracked = get_tracked_files(root)
 
     for filepath in root.rglob("*"):
+        if tracked is not None and filepath.resolve() not in tracked:
+            continue
         if any(d in filepath.parts for d in SKIP_DIRS):
             continue
         if is_build_context(filepath):
@@ -88,8 +100,12 @@ def run(repo_root: str) -> RuleResult:
 
                 configurable = has_configurable_url(line)
                 hardcoded_url = bool(re.search(r'https?://', line))
+                in_test = is_test_file(filepath)
 
-                if hardcoded_url and not configurable:
+                if in_test:
+                    severity = "info"
+                    msg = f"{desc} — test file, informational only."
+                elif hardcoded_url and not configurable:
                     severity = "blocker"
                     msg = f"{desc} with hardcoded external URL — will fail disconnected."
                 elif configurable:

@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import List, Set
 
 try:
-    from rules.common import Finding, RuleResult
+    from rules.common import Finding, RuleResult, get_tracked_files
 except ModuleNotFoundError:
-    from common import Finding, RuleResult
+    from common import Finding, RuleResult, get_tracked_files
 
 GIT_DEP_PATTERN = re.compile(r'git\+https?://[^\s]+')
 PIP_INSTALL_PATTERN = re.compile(r'(?:pip|pip3)\s+install\s+([^\s]+)')
@@ -112,6 +112,10 @@ def check_runtime_pip_installs(filepath: Path, root: Path) -> List[Finding]:
 def run(repo_root: str) -> RuleResult:
     root = Path(repo_root)
     result = RuleResult(rule="python-imports-bundled")
+    tracked = get_tracked_files(root)
+
+    def _is_tracked(fp: Path) -> bool:
+        return tracked is None or fp.resolve() in tracked
 
     config_path = root / ".disconnected-readiness" / "known_mirrors.yaml"
     known = KNOWN_BUNDLED | load_known_mirrors(config_path)
@@ -122,7 +126,7 @@ def run(repo_root: str) -> RuleResult:
     ]
     for pattern in req_patterns:
         for filepath in root.glob(pattern):
-            if any(d in filepath.parts for d in SKIP_DIRS):
+            if any(d in filepath.parts for d in SKIP_DIRS) or not _is_tracked(filepath):
                 continue
             for finding in check_requirements_file(filepath, root, known):
                 result.findings.append(finding)
@@ -130,17 +134,17 @@ def run(repo_root: str) -> RuleResult:
                     result.passed = False
 
     for filepath in root.rglob("*.py"):
-        if any(d in filepath.parts for d in SKIP_DIRS):
+        if any(d in filepath.parts for d in SKIP_DIRS) or not _is_tracked(filepath):
             continue
         for finding in check_runtime_pip_installs(filepath, root):
             result.findings.append(finding)
             if finding.severity == "blocker":
                 result.passed = False
 
-    setup_files = list(root.glob("setup.py")) + list(root.glob("**/setup.py"))
-    pyproject_files = list(root.glob("pyproject.toml")) + list(root.glob("**/pyproject.toml"))
+    setup_files = list(root.glob("**/setup.py"))
+    pyproject_files = list(root.glob("**/pyproject.toml"))
     for filepath in setup_files + pyproject_files:
-        if any(d in filepath.parts for d in SKIP_DIRS):
+        if any(d in filepath.parts for d in SKIP_DIRS) or not _is_tracked(filepath):
             continue
         try:
             content = filepath.read_text()

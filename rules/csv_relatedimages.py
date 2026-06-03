@@ -18,9 +18,9 @@ import re
 from pathlib import Path
 
 try:
-    from rules.common import Finding, RuleResult
+    from rules.common import Finding, RuleResult, get_tracked_files
 except ModuleNotFoundError:
-    from common import Finding, RuleResult
+    from common import Finding, RuleResult, get_tracked_files
 
 IMAGE_REF_PATTERN = re.compile(
     r'(?:'
@@ -183,12 +183,14 @@ def normalize_image(ref: str) -> str:
     return ref
 
 
-def scan_for_image_refs(repo_root: Path) -> list[tuple[Path, int, str]]:
+def scan_for_image_refs(repo_root: Path, tracked: set[Path] | None = None) -> list[tuple[Path, int, str]]:
     """Scan source files for container image references."""
     extensions = {".go", ".py", ".yaml", ".yml", ".json", ".sh"}
     results = []
 
     for filepath in repo_root.rglob("*"):
+        if tracked is not None and filepath.resolve() not in tracked:
+            continue
         if any(d in filepath.parts for d in SKIP_DIRS):
             continue
         if filepath.suffix not in extensions and filepath.name != "Dockerfile":
@@ -220,6 +222,7 @@ def scan_for_image_refs(repo_root: Path) -> list[tuple[Path, int, str]]:
 def check_env_var_pattern(
     repo_root: Path,
     manifest_env_vars: set[str] | None = None,
+    tracked: set[Path] | None = None,
 ) -> RuleResult:
     """Check repos that use RELATED_IMAGE_* env var pattern.
 
@@ -249,7 +252,7 @@ def check_env_var_pattern(
             message=f"Repo uses RELATED_IMAGE_* pattern. Found {len(local_vars)} env vars.",
         ))
 
-    image_refs = scan_for_image_refs(repo_root)
+    image_refs = scan_for_image_refs(repo_root, tracked=tracked)
     file_lines_cache: dict[Path, list[str]] = {}
 
     dirs_with_refs: set[Path] = set()
@@ -368,7 +371,7 @@ def check_env_var_pattern(
     return result
 
 
-def check_static_csv_pattern(repo_root: Path) -> RuleResult:
+def check_static_csv_pattern(repo_root: Path, tracked: set[Path] | None = None) -> RuleResult:
     """Check repos that use static CSV relatedImages."""
     result = RuleResult(rule="image-manifest-complete")
     related_images = extract_static_related_images(repo_root)
@@ -382,7 +385,7 @@ def check_static_csv_pattern(repo_root: Path) -> RuleResult:
             message="CSV found but relatedImages section is empty or unparseable.",
         ))
 
-    image_refs = scan_for_image_refs(repo_root)
+    image_refs = scan_for_image_refs(repo_root, tracked=tracked)
 
     for filepath, line_num, image in image_refs:
         normalized = normalize_image(image)
@@ -411,12 +414,13 @@ def run(repo_root: str, manifest_env_vars: set[str] | None = None) -> RuleResult
     cross-reference against the authoritative operator manifest.
     """
     root = Path(repo_root)
+    tracked = get_tracked_files(root)
     pattern = detect_image_pattern(root)
 
     if pattern == "env_var":
-        return check_env_var_pattern(root, manifest_env_vars=manifest_env_vars)
+        return check_env_var_pattern(root, manifest_env_vars=manifest_env_vars, tracked=tracked)
     elif pattern == "static_csv":
-        return check_static_csv_pattern(root)
+        return check_static_csv_pattern(root, tracked=tracked)
     else:
         result = RuleResult(rule="image-manifest-complete")
         result.findings.append(Finding(

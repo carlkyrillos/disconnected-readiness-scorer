@@ -3,16 +3,17 @@
 import json
 import sys
 from dataclasses import dataclass, field
-from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from main import (
-    RULE_REGISTRY,
+    _get_repo_name,
     _render_template_simple,
     adapt_manifest_result,
+    apply_exceptions,
     compute_score,
+    load_exceptions,
     parse_args,
     print_summary,
     render_json,
@@ -60,7 +61,7 @@ class TestParseArgs:
 class TestResolveRules:
     def test_all_returns_defaults(self):
         result = resolve_rules("all")
-        assert result == ["csv", "tags", "egress", "python"]
+        assert result == ["csv", "tags", "egress", "python", "params_env"]
 
     def test_specific_rules(self):
         assert resolve_rules("csv,tags") == ["csv", "tags"]
@@ -224,12 +225,12 @@ class TestRenderTemplateSimple:
     def test_for_loop(self):
         template = "{% for item in items %}[{{ item.v }}]{% endfor %}"
         ctx = {"items": [{"v": "a"}, {"v": "b"}]}
-        assert _render_template_simple(template, ctx) == "[a][b]"
+        assert _render_template_simple(template, ctx) == "[a]\n[b]"
 
     def test_dot_access_in_loop(self):
         template = "{% for r in rules %}{{ r.name }},{% endfor %}"
         ctx = {"rules": [{"name": "x"}, {"name": "y"}]}
-        assert _render_template_simple(template, ctx) == "x,y,"
+        assert _render_template_simple(template, ctx) == "x,\ny,"
 
     def test_nested_for_raises(self):
         template = "{% for a in x %}{% for b in y %}{% endfor %}{% endfor %}"
@@ -327,3 +328,281 @@ class TestMain:
             exit_code = main([".", "--rules", "csv", "--report", "json"])
             assert exit_code == 0
             mock_load.assert_called_once()
+
+
+# --- load_exceptions ---
+
+class TestLoadExceptions:
+    def test_load_from_file(self, tmp_path):
+        exc_file = tmp_path / "exceptions.yaml"
+        exc_file.write_text(
+            "exceptions:\n"
+            "  - rule: no-runtime-egress\n"
+            '    path: "src/main.go"\n'
+            '    reason: "internal proxy"\n'
+        )
+        result = load_exceptions(str(exc_file))
+        assert len(result) == 1
+        assert result[0]["rule"] == "no-runtime-egress"
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert load_exceptions(str(tmp_path / "nope.yaml")) == []
+
+    def test_empty_exceptions_returns_empty(self, tmp_path):
+        exc_file = tmp_path / "exceptions.yaml"
+        exc_file.write_text("exceptions: []\n")
+        assert load_exceptions(str(exc_file)) == []
+
+    def test_missing_reason_raises(self, tmp_path):
+        exc_file = tmp_path / "exceptions.yaml"
+        exc_file.write_text(
+            "exceptions:\n"
+            "  - rule: no-image-tags\n"
+            '    path: "deploy.yaml"\n'
+        )
+        with pytest.raises(ValueError, match="missing required 'reason' field"):
+            load_exceptions(str(exc_file))
+
+    def test_fallback_parser_handles_simple_format(self, tmp_path):
+        exc_file = tmp_path / "exceptions.yaml"
+        exc_file.write_text(
+            "exceptions:\n"
+            "  - rule: no-image-tags, no-runtime-egress\n"
+            '    path: "install/*"\n'
+            '    reason: "historical snapshots"\n'
+        )
+        result = load_exceptions(str(exc_file))
+        assert len(result) == 1
+        assert result[0]["rule"] == "no-image-tags, no-runtime-egress"
+        assert result[0]["path"] == "install/*"
+
+    def test_fallback_parser_reordered_keys(self, tmp_path):
+        exc_file = tmp_path / "exceptions.yaml"
+        exc_file.write_text(
+            "exceptions:\n"
+            '  - path: "install/*"\n'
+            "    rule: no-image-tags\n"
+            '    reason: "historical"\n'
+        )
+        with patch.dict("sys.modules", {"yaml": None}):
+            from main import _parse_exceptions_fallback
+            result = _parse_exceptions_fallback(exc_file.read_text())
+        assert len(result) == 1
+        assert result[0]["rule"] == "no-image-tags"
+        assert result[0]["path"] == "install/*"
+
+
+# --- _get_repo_name ---
+
+class TestGetRepoName:
+    def test_https_remote(self, tmp_path):
+        subprocess_run = patch(
+            "main.subprocess.check_output",
+            return_value="https://github.com/org-a/my-repo.git\n",
+        )
+        with subprocess_run:
+            assert _get_repo_name(str(tmp_path)) == "org-a/my-repo"
+
+    def test_ssh_remote(self, tmp_path):
+        subprocess_run = patch(
+            "main.subprocess.check_output",
+            return_value="git@github.com:org-a/my-repo.git\n",
+        )
+        with subprocess_run:
+            assert _get_repo_name(str(tmp_path)) == "org-a/my-repo"
+
+    def test_no_remote_falls_back_to_basename(self, tmp_path):
+        from subprocess import CalledProcessError
+        subprocess_run = patch(
+            "main.subprocess.check_output",
+            side_effect=CalledProcessError(1, "git"),
+        )
+        with subprocess_run:
+            assert _get_repo_name(str(tmp_path)) == tmp_path.name
+
+
+# --- apply_exceptions ---
+
+class TestApplyExceptions:
+    def test_matching_rule_downgrades_blocker(self):
+        results = [RuleResult(
+            rule="no-image-tags", passed=False,
+            findings=[Finding("blocker", "deploy.yaml", 10, "img:latest", "bad tag")],
+        )]
+        exceptions = [{"rule": "no-image-tags", "reason": "known false positive"}]
+        apply_exceptions(results, exceptions, "my-repo")
+        assert results[0].findings[0].severity == "info"
+        assert "[Exception:" in results[0].findings[0].message
+        assert results[0].passed is True
+
+    def test_matching_rule_downgrades_warning(self):
+        results = [RuleResult(
+            rule="no-runtime-egress",
+            findings=[Finding("warning", "main.go", 5, "", "configurable URL")],
+        )]
+        exceptions = [{"rule": "no-runtime-egress", "reason": "internal only"}]
+        apply_exceptions(results, exceptions, "repo")
+        assert results[0].findings[0].severity == "info"
+
+    def test_non_matching_rule_keeps_severity(self):
+        results = [RuleResult(
+            rule="no-image-tags", passed=False,
+            findings=[Finding("blocker", "f.yaml", 1, "img", "bad")],
+        )]
+        exceptions = [{"rule": "no-runtime-egress", "reason": "wrong rule"}]
+        apply_exceptions(results, exceptions, "repo")
+        assert results[0].findings[0].severity == "blocker"
+        assert results[0].passed is False
+
+    def test_path_glob_matching(self):
+        results = [RuleResult(
+            rule="no-image-tags", passed=False,
+            findings=[
+                Finding("blocker", "src/main.go", 1, "img", "bad"),
+                Finding("blocker", "deploy/app.yaml", 2, "img2", "also bad"),
+            ],
+        )]
+        exceptions = [{"rule": "no-image-tags", "path": "src/*.go", "reason": "source ok"}]
+        apply_exceptions(results, exceptions, "repo")
+        assert results[0].findings[0].severity == "info"
+        assert results[0].findings[1].severity == "blocker"
+        assert results[0].passed is False
+
+    def test_repo_filter_matches(self):
+        results = [RuleResult(
+            rule="no-runtime-egress", passed=False,
+            findings=[Finding("blocker", "f.go", 1, "", "egress")],
+        )]
+        exceptions = [{"rule": "no-runtime-egress", "repo": "org/my-repo", "reason": "ok"}]
+        apply_exceptions(results, exceptions, "org/my-repo")
+        assert results[0].findings[0].severity == "info"
+
+    def test_repo_filter_no_match(self):
+        results = [RuleResult(
+            rule="no-runtime-egress", passed=False,
+            findings=[Finding("blocker", "f.go", 1, "", "egress")],
+        )]
+        exceptions = [{"rule": "no-runtime-egress", "repo": "other-repo", "reason": "ok"}]
+        apply_exceptions(results, exceptions, "my-repo")
+        assert results[0].findings[0].severity == "blocker"
+
+    def test_repo_filter_short_exception_matches_full_repo_name(self):
+        results = [RuleResult(
+            rule="no-runtime-egress", passed=False,
+            findings=[Finding("blocker", "f.go", 1, "", "egress")],
+        )]
+        exceptions = [{"rule": "no-runtime-egress", "repo": "my-repo", "reason": "ok"}]
+        apply_exceptions(results, exceptions, "org/my-repo")
+        assert results[0].findings[0].severity == "info"
+
+    def test_repo_filter_different_org_same_name_no_match(self):
+        results = [RuleResult(
+            rule="no-runtime-egress", passed=False,
+            findings=[Finding("blocker", "f.go", 1, "", "egress")],
+        )]
+        exceptions = [{"rule": "no-runtime-egress", "repo": "org-a/foo", "reason": "ok"}]
+        apply_exceptions(results, exceptions, "org-b/foo")
+        assert results[0].findings[0].severity == "blocker"
+
+    def test_passed_recomputed_after_downgrade(self):
+        results = [RuleResult(
+            rule="r", passed=False,
+            findings=[
+                Finding("blocker", "a.go", 1, "", "b1"),
+                Finding("blocker", "b.go", 2, "", "b2"),
+            ],
+        )]
+        exceptions = [
+            {"rule": "r", "path": "a.go", "reason": "ok"},
+            {"rule": "r", "path": "b.go", "reason": "ok"},
+        ]
+        apply_exceptions(results, exceptions, "repo")
+        assert results[0].passed is True
+
+    def test_no_exceptions_noop(self):
+        results = [RuleResult(
+            rule="r", passed=False,
+            findings=[Finding("blocker", "f", 1, "", "msg")],
+        )]
+        apply_exceptions(results, [], "repo")
+        assert results[0].findings[0].severity == "blocker"
+        assert results[0].passed is False
+
+    def test_comma_separated_rules(self):
+        results = [
+            RuleResult(
+                rule="no-image-tags", passed=False,
+                findings=[Finding("blocker", "install/v1/k.yaml", 1, "img", "bad")],
+            ),
+            RuleResult(
+                rule="no-runtime-egress", passed=False,
+                findings=[Finding("blocker", "install/v1/s.sh", 5, "", "curl")],
+            ),
+        ]
+        exceptions = [{
+            "rule": "no-image-tags, no-runtime-egress",
+            "path": "install/*",
+            "reason": "historical snapshots",
+        }]
+        apply_exceptions(results, exceptions, "repo")
+        assert results[0].findings[0].severity == "info"
+        assert results[0].passed is True
+        assert results[1].findings[0].severity == "info"
+        assert results[1].passed is True
+
+
+# --- report sorting ---
+
+class TestReportSorting:
+    def test_markdown_blockers_before_warnings(self):
+        results = [
+            RuleResult(rule="r1", passed=False, findings=[
+                Finding("warning", "w.go", 1, "", "warn msg"),
+                Finding("blocker", "b.go", 2, "img", "block msg"),
+            ]),
+        ]
+        output = render_markdown("NOT READY", results, "repo")
+        blockers_pos = output.index("## Blockers")
+        warnings_pos = output.index("## Warnings")
+        assert blockers_pos < warnings_pos
+        blockers_section = output[blockers_pos:warnings_pos]
+        assert "block msg" in blockers_section
+        warnings_section = output[warnings_pos:]
+        assert "warn msg" in warnings_section
+
+    def test_json_findings_sorted_by_severity(self):
+        results = [
+            RuleResult(rule="r", findings=[
+                Finding("info", "i.go", 1, "", "info"),
+                Finding("blocker", "b.go", 2, "", "blocker"),
+                Finding("warning", "w.go", 3, "", "warning"),
+            ]),
+        ]
+        data = json.loads(render_json("WARNING", results, "repo"))
+        severities = [f["severity"] for f in data["rules"][0]["findings"]]
+        assert severities == ["blocker", "warning", "info"]
+
+    def test_fallback_renderer_two_for_loops(self):
+        template = (
+            "{% for b in blockers %}B:{{ b.msg }}{% endfor %}"
+            "{% for w in warnings %}W:{{ w.msg }}{% endfor %}"
+        )
+        ctx = {
+            "blockers": [{"msg": "b1"}],
+            "warnings": [{"msg": "w1"}, {"msg": "w2"}],
+        }
+        result = _render_template_simple(template, ctx)
+        assert result == "B:b1W:w1\nW:w2"
+
+
+# --- parse_args exceptions flag ---
+
+class TestParseArgsExceptions:
+    def test_exceptions_flag(self, tmp_path):
+        exc_path = tmp_path / "exc.yaml"
+        args = parse_args([".", "--exceptions", str(exc_path)])
+        assert args.exceptions == str(exc_path)
+
+    def test_exceptions_default_none(self):
+        args = parse_args(["."])
+        assert args.exceptions is None

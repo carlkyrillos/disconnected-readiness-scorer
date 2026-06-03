@@ -12,14 +12,20 @@
 | {{ rule.name }} | {{ rule.result }} | {{ rule.blockers }} | {{ rule.warnings }} |
 {% endfor %}
 
-## Findings
+## Blockers
 
-{% for finding in findings %}
-### {{ finding.severity | upper }}: {{ finding.rule }}
+| Rule | File | Line | Message |
+|------|------|------|---------|
+{% for f in blockers %}
+| {{ f.rule }} | {{ f.file }} | {{ f.line }} | {{ f.message }} |
+{% endfor %}
 
-**File:** `{{ finding.file }}:{{ finding.line }}`
-{{ finding.message }}
+## Warnings
 
+| Rule | File | Line | Message |
+|------|------|------|---------|
+{% for f in warnings %}
+| {{ f.rule }} | {{ f.file }} | {{ f.line }} | {{ f.message }} |
 {% endfor %}
 
 ---

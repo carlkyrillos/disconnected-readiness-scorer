@@ -6,16 +6,20 @@ an aggregate READY / WARNING / NOT READY score.
 """
 
 import argparse
+import fnmatch
 import importlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from datetime import date
 from pathlib import Path
 
 from rules.common import Finding, RuleResult
+
+SEVERITY_ORDER = {"blocker": 0, "warning": 1, "info": 2}
 
 RULE_REGISTRY = {
     "csv": {
@@ -35,6 +39,11 @@ RULE_REGISTRY = {
         "module": "rules.python_imports",
         "name": "python-imports-bundled",
     },
+    "params_env": {
+        "module": "rules.params_env",
+        "name": "params-env-wiring",
+        "needs_manifest": True,
+    },
     "manifest": {
         "module": "rules.operator_manifest",
         "name": "operator-manifest",
@@ -42,7 +51,87 @@ RULE_REGISTRY = {
     },
 }
 
-DEFAULT_RULES = ["csv", "tags", "egress", "python"]
+DEFAULT_RULES = ["csv", "tags", "egress", "python", "params_env"]
+
+
+def _parse_exceptions_fallback(text):
+    """Parse exceptions.yaml without PyYAML — handles the simple list-of-dicts format."""
+    exceptions = []
+    current = None
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "exceptions: []":
+            return []
+        if stripped == "exceptions:":
+            continue
+        if stripped.startswith("- ") and ":" in stripped[2:]:
+            if current is not None:
+                exceptions.append(current)
+            key, val = stripped[2:].split(":", 1)
+            current = {key.strip(): val.strip().strip('"').strip("'")}
+        elif current is not None and ":" in stripped:
+            key, val = stripped.split(":", 1)
+            current[key.strip()] = val.strip().strip('"').strip("'")
+    if current is not None:
+        exceptions.append(current)
+    return exceptions
+
+
+def load_exceptions(config_path):
+    """Load exception rules from a YAML config file."""
+    if not Path(config_path).exists():
+        return []
+    text = Path(config_path).read_text()
+    try:
+        import yaml
+        raw = yaml.safe_load(text)
+        exceptions = raw.get("exceptions") or [] if isinstance(raw, dict) else []
+    except ImportError:
+        exceptions = _parse_exceptions_fallback(text)
+    for i, exc in enumerate(exceptions):
+        if not exc.get("reason"):
+            raise ValueError(
+                f"Exception entry {i + 1} (rule={exc.get('rule', '?')}) "
+                f"in {config_path} is missing required 'reason' field"
+            )
+    return exceptions
+
+
+def apply_exceptions(results, exceptions, repo_name):
+    """Downgrade findings that match configured exceptions to info severity."""
+    for result in results:
+        for finding in result.findings:
+            if finding.severity not in ("blocker", "warning"):
+                continue
+            for exc in exceptions:
+                exc_rules = [r.strip() for r in exc.get("rule", "").split(",")]
+                if result.rule not in exc_rules:
+                    continue
+                exc_repo = exc.get("repo")
+                if exc_repo:
+                    if "/" in exc_repo:
+                        if exc_repo != repo_name:
+                            continue
+                    else:
+                        if exc_repo != repo_name.rsplit("/", 1)[-1]:
+                            continue
+                exc_path = exc.get("path")
+                if exc_path and not fnmatch.fnmatch(finding.file, exc_path):
+                    continue
+                exc_image = exc.get("image")
+                if exc_image and not fnmatch.fnmatch(finding.image, exc_image):
+                    continue
+                exc_message = exc.get("message")
+                if exc_message and exc_message not in finding.message:
+                    continue
+                reason = exc.get("reason", "configured exception")
+                finding.message += f" [Exception: {reason}]"
+                finding.severity = "info"
+                break
+        if not any(f.severity == "blocker" for f in result.findings):
+            result.passed = True
 
 
 def parse_args(argv=None):
@@ -56,7 +145,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--rules", default="all",
         help="Comma-separated rule aliases, or 'all' (default: all). "
-             "'all' runs the default set (csv, tags, egress, python); "
+             "'all' runs the default set (csv, tags, egress, python, params_env); "
              "add 'manifest' explicitly for operator cross-referencing. "
              f"Available: {', '.join(RULE_REGISTRY)}",
     )
@@ -72,6 +161,10 @@ def parse_args(argv=None):
     parser.add_argument(
         "--output", "-o",
         help="Write the report to a file instead of stdout.",
+    )
+    parser.add_argument(
+        "--exceptions",
+        help="Path to exceptions.yaml (default: config/exceptions.yaml).",
     )
     return parser.parse_args(argv)
 
@@ -99,7 +192,11 @@ def load_manifest(operator_path):
                 f"Use --operator-path to provide a pre-cloned copy."
             ) from exc
     manifest = mod.build_manifest(str(target))
-    env_vars = set(e.env_var for e in manifest.images)
+    env_vars = set()
+    for e in manifest.images:
+        env_vars.add(e.env_var)
+        if e.manifest_key:
+            env_vars.add(e.manifest_key)
     return manifest, env_vars
 
 
@@ -180,7 +277,8 @@ def render_json(score, results, repo_name):
                 "findings": [
                     {"severity": f.severity, "file": f.file, "line": f.line,
                      "image": f.image, "message": f.message}
-                    for f in r.findings
+                    for f in sorted(r.findings,
+                                    key=lambda f: SEVERITY_ORDER.get(f.severity, 99))
                 ],
             }
             for r in results
@@ -221,7 +319,7 @@ def _render_template_simple(template_str, context):
     def expand_for(m):
         var_name = m.group(1)
         collection_name = m.group(2)
-        body = m.group(3)
+        body = m.group(3).strip("\n")
         if re.search(r'\{%\s*for\s+', body):
             raise ValueError("Nested {% for %} blocks are not supported by the built-in template renderer.")
         collection = context.get(collection_name, [])
@@ -234,7 +332,7 @@ def _render_template_simple(template_str, context):
                 body,
             )
             pieces.append(rendered)
-        return "".join(pieces)
+        return "\n".join(pieces)
 
     output = for_pattern.sub(expand_for, template_str)
     output = re.sub(
@@ -245,12 +343,33 @@ def _render_template_simple(template_str, context):
     return output
 
 
+def _escape_md_cell(value):
+    """Escape a string for use inside a Markdown table cell."""
+    s = str(value).replace("|", "\\|").replace("\n", " ")
+    return s.replace("<", "&lt;").replace(">", "&gt;")
+
+
 def render_markdown(score, results, repo_name):
     template_path = Path(__file__).parent / "templates" / "report.md"
     try:
         template_str = template_path.read_text()
     except OSError:
         return f"# Disconnected Readiness Report\n\n**Score:** {score}\n"
+
+    blocker_rows = []
+    warning_rows = []
+    for r in results:
+        for f in r.findings:
+            row = {
+                "rule": _escape_md_cell(r.rule),
+                "file": _escape_md_cell(f.file),
+                "line": f.line,
+                "message": _escape_md_cell(f.message),
+            }
+            if f.severity == "blocker":
+                blocker_rows.append(row)
+            elif f.severity == "warning":
+                warning_rows.append(row)
 
     context = {
         "repo_name": repo_name,
@@ -265,32 +384,43 @@ def render_markdown(score, results, repo_name):
             }
             for r in results
         ],
-        "findings": [
-            {
-                "severity": f.severity,
-                "rule": r.rule,
-                "file": f.file,
-                "line": f.line,
-                "message": f.message,
-            }
-            for r in results
-            for f in r.findings
-            if f.severity in ("blocker", "warning")
-        ],
+        "blockers": blocker_rows,
+        "warnings": warning_rows,
     }
 
     try:
         import jinja2
-        env = jinja2.Environment(autoescape=False)
+        env = jinja2.Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
         tmpl = env.from_string(template_str)
         return tmpl.render(**context)
     except ImportError:
         return _render_template_simple(template_str, context)
 
 
+def _get_repo_name(repo_root):
+    """Derive org/name from git remote, fall back to directory basename."""
+    try:
+        url = subprocess.check_output(
+            ["git", "-C", repo_root, "remote", "get-url", "origin"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        url = re.sub(r"\.git$", "", url)
+        # Normalize SSH git@host:org/repo → org/repo
+        ssh_match = re.match(r"[^@]+@[^:]+:(.+)", url)
+        if ssh_match:
+            url = ssh_match.group(1)
+        parts = url.rstrip("/").rsplit("/", 2)
+        if len(parts) >= 2:
+            return f"{parts[-2]}/{parts[-1]}"
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    return os.path.basename(repo_root)
+
+
 def _run(args, operator_path):
     repo_root = os.path.abspath(args.repo_root)
-    repo_name = os.path.basename(repo_root)
+    repo_name = _get_repo_name(repo_root)
     selected = resolve_rules(args.rules)
 
     manifest = None
@@ -298,10 +428,16 @@ def _run(args, operator_path):
 
     need_manifest = "manifest" in selected
     for key in selected:
-        if RULE_REGISTRY[key].get("needs_manifest"):
-            mod = importlib.import_module(RULE_REGISTRY[key]["module"])
+        if not RULE_REGISTRY[key].get("needs_manifest"):
+            continue
+        mod = importlib.import_module(RULE_REGISTRY[key]["module"])
+        if hasattr(mod, "detect_image_pattern"):
             pattern = mod.detect_image_pattern(Path(repo_root))
             if pattern == "env_var":
+                need_manifest = True
+                break
+        elif hasattr(mod, "detect_params_env"):
+            if mod.detect_params_env(Path(repo_root)):
                 need_manifest = True
                 break
 
@@ -319,11 +455,16 @@ def _run(args, operator_path):
             results.append(adapt_manifest_result(manifest))
             continue
 
-        if key == "csv" and manifest_env_vars is not None:
+        if key in ("csv", "params_env") and manifest_env_vars is not None:
             result = mod.run(repo_root, manifest_env_vars=manifest_env_vars)
         else:
             result = mod.run(repo_root)
         results.append(result)
+
+    exceptions_path = args.exceptions or str(Path(__file__).parent / "config" / "exceptions.yaml")
+    exceptions = load_exceptions(exceptions_path)
+    if exceptions:
+        apply_exceptions(results, exceptions, repo_name)
 
     score = compute_score(results)
     print_summary(score, results)

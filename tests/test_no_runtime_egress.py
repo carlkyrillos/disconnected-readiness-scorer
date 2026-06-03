@@ -142,13 +142,15 @@ class TestRun:
         result = run(str(tmp_path))
         assert result.findings == []
 
-    def test_test_dir_skipped(self, tmp_path):
+    def test_test_dir_produces_info(self, tmp_path):
         test_dir = tmp_path / "test"
         test_dir.mkdir()
         f = test_dir / "helper.py"
         f.write_text('requests.get("https://example.com")')
         result = run(str(tmp_path))
-        assert result.findings == []
+        assert len(result.findings) == 1
+        assert result.findings[0].severity == "info"
+        assert result.passed is True
 
     def test_unrecognized_extension_skipped(self, tmp_path):
         f = tmp_path / "file.rb"

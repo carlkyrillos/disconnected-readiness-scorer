@@ -1,6 +1,25 @@
-exceptions: []
-# Example:
-# - repo: opendatahub-io/odh-dashboard
-#   rule: no-runtime-egress
-#   path: frontend/src/utilities/fetch.ts
+# Exception rules for disconnected-readiness-scorer.
+# Each exception downgrades matching blocker/warning findings to info severity.
+#
+# Fields:
+#   rule:   (required) Rule name or comma-separated list (e.g. "no-runtime-egress, no-image-tags")
+#   path:   (optional) Glob pattern matched against finding file path (e.g. "frontend/*.ts")
+#   image:  (optional) Glob pattern matched against finding image ref (e.g. "quay.io/org/img:*")
+#   message: (optional) Substring match against finding message (e.g. "http.DefaultClient")
+#   repo:   (optional) Repository name filter (matches basename or org/repo form)
+#   reason: (required) Why this exception exists
+#
+# Examples:
+# - rule: no-runtime-egress
+#   path: "frontend/src/utilities/fetch.ts"
 #   reason: "Uses cluster-internal API proxy, not external egress"
+#
+# - rule: no-image-tags
+#   path: "test/*"
+#   reason: "Test fixtures use mutable tags intentionally"
+#
+# - rule: no-runtime-egress
+#   repo: opendatahub-io/odh-dashboard
+#   reason: "Dashboard proxies all external calls through the backend"
+
+exceptions: []

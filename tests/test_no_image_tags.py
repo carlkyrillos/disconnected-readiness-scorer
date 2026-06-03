@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from rules.no_image_tags import is_excluded_file, is_production_file, scan_file, run
+from rules.no_image_tags import is_excluded_file, is_source_code, scan_file, run
 
 
 class TestIsExcludedFile:
@@ -30,25 +30,34 @@ class TestIsExcludedFile:
     def test_tekton_dir(self):
         assert is_excluded_file(Path(".tekton/pipeline.yaml")) is True
 
+    def test_dockerfile(self):
+        assert is_excluded_file(Path("Dockerfile")) is True
+
+    def test_containerfile(self):
+        assert is_excluded_file(Path("build/Containerfile")) is True
+
+    def test_named_dockerfile(self):
+        assert is_excluded_file(Path("build/runtime.Dockerfile")) is True
+
     def test_regular_file(self):
         assert is_excluded_file(Path("pkg/server.go")) is False
 
 
-class TestIsProductionFile:
-    def test_manifests_dir(self):
-        assert is_production_file(Path("manifests/deployment.yaml")) is True
+class TestIsSourceCode:
+    def test_go_file(self):
+        assert is_source_code(Path("pkg/main.go")) is True
 
-    def test_deploy_dir(self):
-        assert is_production_file(Path("deploy/operator.yaml")) is True
+    def test_python_file(self):
+        assert is_source_code(Path("src/app.py")) is True
 
-    def test_config_dir(self):
-        assert is_production_file(Path("config/manager/kustomization.yaml")) is True
+    def test_shell_file(self):
+        assert is_source_code(Path("scripts/run.sh")) is True
 
-    def test_test_inside_manifests(self):
-        assert is_production_file(Path("manifests/test/helper.yaml")) is False
+    def test_yaml_file(self):
+        assert is_source_code(Path("config/deploy.yaml")) is False
 
-    def test_regular_dir(self):
-        assert is_production_file(Path("pkg/handler.go")) is False
+    def test_json_file(self):
+        assert is_source_code(Path("config/settings.json")) is False
 
 
 class TestScanFile:
@@ -57,26 +66,26 @@ class TestScanFile:
         f.write_text("image: quay.io/org/img@sha256:" + "a" * 64)
         assert scan_file(f, tmp_path) == []
 
-    def test_tag_ref_in_source_is_warning(self, tmp_path):
+    def test_tag_ref_in_source_is_blocker(self, tmp_path):
         pkg = tmp_path / "pkg"
         pkg.mkdir()
         f = pkg / "main.go"
         f.write_text('image: quay.io/org/img:latest')
         findings = scan_file(f, tmp_path)
         assert len(findings) == 1
-        assert findings[0].severity == "warning"
+        assert findings[0].severity == "blocker"
         assert ":latest" in findings[0].image
 
-    def test_tag_ref_in_production_dir_is_blocker(self, tmp_path):
+    def test_tag_ref_in_manifest_is_warning(self, tmp_path):
         manifests = tmp_path / "manifests"
         manifests.mkdir()
         f = manifests / "deploy.yaml"
         f.write_text('image: quay.io/org/img:v1.0')
         findings = scan_file(f, tmp_path)
         assert len(findings) == 1
-        assert findings[0].severity == "blocker"
+        assert findings[0].severity == "warning"
 
-    def test_tag_ref_in_test_file_is_info(self, tmp_path):
+    def test_tag_ref_in_test_dir_is_info(self, tmp_path):
         test_dir = tmp_path / "test"
         test_dir.mkdir()
         f = test_dir / "helper.go"
@@ -84,6 +93,22 @@ class TestScanFile:
         findings = scan_file(f, tmp_path)
         assert len(findings) == 1
         assert findings[0].severity == "info"
+
+    def test_tag_ref_in_test_go_file_is_info(self, tmp_path):
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        f = pkg / "handler_test.go"
+        f.write_text('image: quay.io/org/img:v1.0')
+        findings = scan_file(f, tmp_path)
+        assert len(findings) == 1
+        assert findings[0].severity == "info"
+
+    def test_tag_ref_in_python_source_is_blocker(self, tmp_path):
+        f = tmp_path / "app.py"
+        f.write_text('image = "quay.io/org/img:latest"')
+        findings = scan_file(f, tmp_path)
+        assert len(findings) == 1
+        assert findings[0].severity == "blocker"
 
     def test_hash_comment_skipped(self, tmp_path):
         f = tmp_path / "deploy.yaml"
@@ -94,6 +119,23 @@ class TestScanFile:
         f = tmp_path / "main.go"
         f.write_text('// image: quay.io/org/img:v1')
         assert scan_file(f, tmp_path) == []
+
+    def test_https_url_skipped(self, tmp_path):
+        f = tmp_path / "go.mod"
+        f.write_text('require https://github.com/kubernetes/api:v0.28.0')
+        assert scan_file(f, tmp_path) == []
+
+    def test_http_url_skipped(self, tmp_path):
+        f = tmp_path / "main.go"
+        f.write_text('url := "http://registry.example.com/org/img:v1"')
+        assert scan_file(f, tmp_path) == []
+
+    def test_image_ref_not_url_still_detected(self, tmp_path):
+        f = tmp_path / "deploy.yaml"
+        f.write_text('image: quay.io/org/img:v1')
+        findings = scan_file(f, tmp_path)
+        assert len(findings) == 1
+        assert findings[0].image == "quay.io/org/img:v1"
 
     def test_unreadable_file(self, tmp_path):
         f = tmp_path / "binary.go"
@@ -145,46 +187,45 @@ class TestRun:
         result = run(str(tmp_path))
         assert result.findings == []
 
-    def test_dockerfile_scanned(self, tmp_path):
+    def test_dockerfile_demoted_to_info(self, tmp_path):
         f = tmp_path / "Dockerfile"
         f.write_text('FROM quay.io/org/base:latest')
         result = run(str(tmp_path))
         assert len(result.findings) == 1
+        assert result.findings[0].severity == "info"
+        assert result.passed is True
 
-    def test_blocker_sets_passed_false(self, tmp_path):
+    def test_manifest_warning_keeps_passed_true(self, tmp_path):
         manifests = tmp_path / "manifests"
         manifests.mkdir()
         f = manifests / "deploy.yaml"
         f.write_text('image: quay.io/org/img:v1.0')
         result = run(str(tmp_path))
-        assert result.passed is False
+        assert result.passed is True
+        assert result.findings[0].severity == "warning"
 
-    def test_warning_keeps_passed_true(self, tmp_path):
+    def test_source_code_tag_sets_passed_false(self, tmp_path):
         pkg = tmp_path / "pkg"
         pkg.mkdir()
         f = pkg / "main.go"
         f.write_text('image: quay.io/org/img:latest')
         result = run(str(tmp_path))
-        assert result.passed is True
-        assert any(f.severity == "warning" for f in result.findings)
+        assert result.passed is False
+        assert any(f.severity == "blocker" for f in result.findings)
 
     def test_mixed_findings(self, tmp_path):
-        manifests = tmp_path / "manifests"
-        manifests.mkdir()
         pkg = tmp_path / "pkg"
         pkg.mkdir()
         test_dir = tmp_path / "test"
         test_dir.mkdir()
 
-        (manifests / "deploy.yaml").write_text(
+        (pkg / "main.go").write_text(
             'image: quay.io/org/img@sha256:' + 'a' * 64
         )
-        (pkg / "main.go").write_text('image: quay.io/org/img:latest')
         (test_dir / "helper.go").write_text('image: quay.io/org/img:v1')
 
         result = run(str(tmp_path))
         assert result.passed is True
         severities = {f.severity for f in result.findings}
-        assert "warning" in severities
         assert "info" in severities
         assert "blocker" not in severities
