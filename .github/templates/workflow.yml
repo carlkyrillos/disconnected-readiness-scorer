@@ -9,4 +9,4 @@ jobs:
   check:
     uses: opendatahub-io/disconnected-readiness-scorer/.github/workflows/disconnected-readiness-check.yml@main
     with:
-      rules: "{{ rules }}"
+      rules: ""

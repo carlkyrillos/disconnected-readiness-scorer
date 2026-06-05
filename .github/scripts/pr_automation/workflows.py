@@ -81,17 +81,12 @@ class TemplateRenderer:
     def __init__(self, config: AutomationConfig):
         self.config = config
 
-    def render_workflow_template(self, rules: str) -> str:
-        """Render workflow template with provided parameters."""
+    def render_workflow_template(self) -> str:
+        """Render workflow template."""
         template_path = self.config.get_workflow_template_path()
 
         with open(template_path, 'r') as f:
-            content = f.read()
-
-        # Simple substitution
-        content = content.replace("{{ rules }}", rules)
-
-        return content
+            return f.read()
 
 
 class SimpleWorkflowManager:

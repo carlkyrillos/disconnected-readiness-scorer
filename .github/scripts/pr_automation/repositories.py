@@ -25,20 +25,20 @@ class RepositoryClassification:
 class RepositoryClassifier:
     """Classifies repositories for processing operations."""
 
-    def __init__(self, exclusions: Set[str], workflow_detector: WorkflowDetector):
-        self.exclusions = exclusions
+    def __init__(self, inclusions: Set[str], workflow_detector: WorkflowDetector):
+        self.inclusions = inclusions
         self.workflow_detector = workflow_detector
         self.categories = {
             READY_FOR_WORKFLOW: 'Ready for Processing',
             ALREADY_HAS_WORKFLOW: 'Already Has Workflow',
-            EXCLUDED_REPOSITORY: 'Excluded Repository',
+            EXCLUDED_REPOSITORY: 'Not Included',
             ARCHIVED_REPOSITORY: 'Archived Repository',
             API_ERROR: 'API Error'
         }
 
-    def _is_excluded_repository(self, repo) -> bool:
-        """Check if repository is in the exclusion list."""
-        return repo.full_name in self.exclusions
+    def _is_included_repository(self, repo) -> bool:
+        """Check if repository is in the inclusion list."""
+        return repo.full_name in self.inclusions
 
     def _categorize_reason(self, reason: str) -> str:
         """Map processing reason to a category for reporting."""
@@ -54,14 +54,14 @@ class RepositoryClassifier:
     def classify_repository(self, repo, trigger_reason: str = "manual") -> RepositoryClassification:
         """Classify a single repository for processing."""
         try:
-            # Check exclusion list first
-            if self._is_excluded_repository(repo):
+            # Check inclusion list first
+            if not self._is_included_repository(repo):
                 return RepositoryClassification(
                     repo_name=repo.full_name,
                     should_process=False,
                     category=EXCLUDED_REPOSITORY,
-                    reason=f"Repository in exclusion list",
-                    details={'excluded': True}
+                    reason="Repository not in inclusion list",
+                    details={'included': False}
                 )
 
             # Use workflow detector's decision logic
@@ -147,7 +147,7 @@ class RepositoryClassifier:
 
         # Skipped categories
         skip_categories = [
-            (EXCLUDED_REPOSITORY, 'Excluded repositories'),
+            (EXCLUDED_REPOSITORY, 'Not included'),
             (ARCHIVED_REPOSITORY, 'Archived'),
             ('incompatible', 'Incompatible'),
             ('fork_external', 'External forks'),

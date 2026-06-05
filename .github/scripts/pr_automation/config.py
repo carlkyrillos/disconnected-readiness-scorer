@@ -21,22 +21,22 @@ class AutomationConfig:
         """Find repository root using GitHub Actions workspace or current directory."""
         return Path(os.environ.get("GITHUB_WORKSPACE", Path.cwd()))
 
-    def load_exclusions(self) -> Set[str]:
-        """Load repository exclusion configuration."""
+    def load_inclusions(self) -> Set[str]:
+        """Load repository inclusion configuration for phased rollout."""
         try:
-            config_file = Path(f"{self.repo_root}/.github/config/repository-exclusions.yaml")
+            config_file = Path(f"{self.repo_root}/.github/config/repositories.yaml")
 
             if config_file.exists():
-                yaml = YAML(typ='safe', pure=True)  # Equivalent to yaml.safe_load
+                yaml = YAML(typ='safe', pure=True)
                 with open(config_file, 'r') as f:
                     config = yaml.load(f) or {}
-                return set(config.get('excluded_repositories') or [])
+                return set(config.get('included_repositories') or [])
             else:
-                print("Warning: No exclusion configuration found, proceeding without exclusions")
+                print("Warning: No repository configuration found, no repos will be processed")
                 return set()
 
         except Exception as e:
-            print(f"Warning: Could not load exclusion configuration: {e}")
+            print(f"Warning: Could not load repository configuration: {e}")
             return set()
 
 

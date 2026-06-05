@@ -60,8 +60,8 @@ class DRSAutomation:
             print("FORCE FULL SCAN: Ignoring state optimization")
         print("=" * 60)
 
-        # Load exclusions configuration
-        exclusions = self.config.load_exclusions()
+        # Load inclusion list for phased rollout
+        inclusions = self.config.load_inclusions()
 
         # Handle template change detection
         if trigger_reason == 'template_change':
@@ -90,7 +90,7 @@ class DRSAutomation:
                 print("Continuing anyway, but processing may be throttled...")
 
         # Initialize classifier and counters
-        classifier = RepositoryClassifier(exclusions, self.workflow_detector)
+        classifier = RepositoryClassifier(inclusions, self.workflow_detector)
         total_orgs_processed = 0
         total_repos = 0
         success_count = 0
@@ -151,7 +151,7 @@ class DRSAutomation:
                 excluded_count += len(excluded_repos)
 
                 if excluded_repos:
-                    print(f" {len(excluded_repos)} repositories excluded by configuration")
+                    print(f" {len(excluded_repos)} repositories not in inclusion list")
 
                 if ready_repos:
                     print(f"\n Processing {len(ready_repos)} repositories that need workflows...")
@@ -178,9 +178,6 @@ class DRSAutomation:
                             elif result.action in ['created', 'simulated']:
                                 if result.action == 'created':
                                     print(f"     Created PR: {result.pr_url}")
-                                    print(f"     Rules: {result.rules}")
-                                    if result.central_exceptions_found:
-                                        print(f"     Central exceptions found: {result.central_exceptions_found}")
                                 else:
                                     print(f"     {result.reason}")
                                 success_count += 1
@@ -230,7 +227,7 @@ class DRSAutomation:
         print(f" Total repositories analyzed: {total_repos}")
         print(f" PRs created/simulated: {success_count}")
         print(f" Already had workflows: {already_has_workflow}")
-        print(f" Excluded repositories: {excluded_count}")
+        print(f" Not included: {excluded_count}")
         print(f"  Other skipped: {skip_count}")
         print(f" Success rate: {((success_count + already_has_workflow) / total_repos * 100):.1f}%" if total_repos > 0 else "Success rate: 0%")
         print(f" Efficiency: {orgs_skipped_no_changes} orgs skipped = ~{orgs_skipped_no_changes * 50} API calls saved")

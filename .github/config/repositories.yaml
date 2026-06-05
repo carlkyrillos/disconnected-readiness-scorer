@@ -1,0 +1,19 @@
+# Repository Inclusion Configuration
+#
+# This file defines repositories that should be processed by
+# DRS PR automation. Only repositories listed here will have
+# disconnected readiness workflows created or updated.
+#
+# Empty list = no repos processed (safe default for phased rollout).
+# Add repos as they are onboarded.
+#
+# Format:
+#   included_repositories:
+#     - org/repo-name
+#
+
+included_repositories:
+  # Add repos here for phased rollout:
+  # - opendatahub-io/odh-dashboard
+  # - opendatahub-io/data-science-pipelines
+  # - opendatahub-io/kserve
