@@ -1,7 +1,8 @@
 # yaml-language-server: $schema=../schemas/config.schema.json
 #
 # Central configuration for the disconnected readiness scanner.
-# Applies to all scanned repos. Per-repo overrides go in
+# Applies to all scanned repos unless scoped by 'repo' field.
+# Per-repo overrides can also go in
 # .disconnected-readiness/config.yaml in the target repository.
 
 registries:
@@ -21,6 +22,11 @@ known_mirrors:
     - https://pypi.corp.redhat.com/simple/
 
 exceptions:
+
+  # ---------------------------------------------------------------------------
+  # Universal exceptions — apply to all repos
+  # ---------------------------------------------------------------------------
+
   # Test directories
   - rule: "*"
     paths:
@@ -28,21 +34,15 @@ exceptions:
       - "**/*tests*/**"
       - "**/testdata/**"
       - "**/testing/**"
-      - "**/e2e/**"
-      - "**/mocks/**"
-      - "**/contract-tests/**"
-      - "**/hack/**"
-      - "**/k8mocks/**"
       - "**/*e2e*/**"
-      - "**/cypress/**"
+      - "**/mocks/**"
+      - "**/hack/**"
     reason: "Test/dev directory — not deployed in production"
 
   # Test file patterns
   - rule: "*"
     paths:
       - "*_test.go"
-      - "*_int_test.go"
-      - "*_internal_test.go"
       - "*_mock.go"
       - "mock_*.go"
       - "*_fake.go"
@@ -53,25 +53,6 @@ exceptions:
       - "*.spec.ts"
       - "*.spec.tsx"
     reason: "Test/mock file"
-
-  # Test fixtures and recordings
-  - rule: "*"
-    paths:
-      - "**/recordings/**"
-      - "**/snapshots/**"
-      - "**/*.snap.json"
-    reason: "Test fixtures and recordings — not deployed in production"
-
-  # Test kustomize overlays
-  - rule: "*"
-    paths:
-      - "config/overlays/test/**"
-      - "config/overlays/test-*/**"
-      - "config/overlays/testing/**"
-      - "config/overlays/kind-tests/**"
-      - "config/overlays/odh-test/**"
-      - "config/samples/**"
-    reason: "Test/sample configuration overlays — not deployed in production"
 
   # CI directories
   - rule: "*"
@@ -89,14 +70,23 @@ exceptions:
       - "**/examples/**"
       - "**/samples/**"
       - "**/demo/**"
-      - "**/kind-emulator/**"
     reason: "Non-production content — not deployed in production"
 
-  # Scorecard config
+  # OLM scorecard config
   - rule: "*"
     paths:
       - "**/config/scorecard/**"
     reason: "OLM scorecard config — test images, not production"
+
+  # Test kustomize overlays
+  - rule: "*"
+    paths:
+      - "config/overlays/test/**"
+      - "config/overlays/test-*/**"
+      - "config/overlays/testing/**"
+      - "config/overlays/kind-tests/**"
+      - "config/overlays/odh-test/**"
+    reason: "Test/sample configuration overlays — not deployed in production"
 
   # Build files
   - rule: "*"
@@ -113,3 +103,85 @@ exceptions:
       - "**/semgrep.yml"
       - "**/.semgrep.yml"
     reason: "Linter config — not runtime"
+
+  # ---------------------------------------------------------------------------
+  # Repo-specific exceptions — scoped via 'repo' field
+  #
+  # Each repo from .github/config/repositories.yaml has a section below.
+  # Add repo-specific path exclusions here rather than broadening the
+  # universal rules above.
+  # ---------------------------------------------------------------------------
+
+  # --- odh-dashboard ---
+  - rule: "*"
+    repo: odh-dashboard
+    paths:
+      - "**/cypress/**"
+      - "**/k8mocks/**"
+      - "**/contract-tests/**"
+      - "**/recordings/**"
+      - "**/*.snap.json"
+    reason: "Frontend test infrastructure — not deployed in production"
+
+  # --- kubeflow ---
+  # (no repo-specific exceptions)
+
+  # --- notebooks ---
+  # (no repo-specific exceptions)
+
+  # --- kserve ---
+  - rule: "*"
+    repo: kserve
+    paths:
+      - "**/install/**"
+    reason: "Upstream versioned install scripts — not used by operator-managed deployments"
+
+  # --- kuberay ---
+  # (no repo-specific exceptions)
+
+  # --- trustyai-service-operator ---
+  # (no repo-specific exceptions)
+
+  # --- model-registry-operator ---
+  # (no repo-specific exceptions)
+
+  # --- training-operator ---
+  # (no repo-specific exceptions)
+
+  # --- data-science-pipelines-operator ---
+  # (no repo-specific exceptions)
+
+  # --- odh-model-controller ---
+  # (no repo-specific exceptions)
+
+  # --- feast ---
+  # (no repo-specific exceptions)
+
+  # --- ogx-k8s-operator ---
+  # (no repo-specific exceptions)
+
+  # --- trainer ---
+  # (no repo-specific exceptions)
+
+  # --- models-as-a-service ---
+  # (no repo-specific exceptions)
+
+  # --- mlflow-operator ---
+  # (no repo-specific exceptions)
+
+  # --- spark-operator ---
+  # (no repo-specific exceptions)
+
+  # --- workload-variant-autoscaler ---
+  - rule: "*"
+    repo: workload-variant-autoscaler
+    paths:
+      - "**/kind-emulator/**"
+    reason: "Local Kind cluster emulator — not deployed in production"
+
+  # --- opendatahub-operator ---
+  - rule: "*"
+    repo: opendatahub-operator
+    paths:
+      - "**/snapshots/**"
+    reason: "Test snapshots — not deployed in production"
