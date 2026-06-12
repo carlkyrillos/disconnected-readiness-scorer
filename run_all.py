@@ -164,7 +164,13 @@ def generate_summary(output_dir, results):
     for r in summary_data:
         if not r["rules"]:
             continue
-        lines += ["", f"---", "", f"## {r['repo']} — {r['score']}"]
+        heading = f"{r['repo']} — {r['score']}"
+        anchor = re.sub(r'\s+', '-', heading.lower())
+        anchor = re.sub(r'[^a-z0-9_-]', '', anchor)
+        lines += [
+            "", f"---", "",
+            f'## <a id="user-content-{anchor}"></a>{heading}',
+        ]
         for rule in r["rules"]:
             findings = [f for f in rule.get("findings", []) if f["severity"] != "info"]
             if not findings:
