@@ -146,7 +146,7 @@ def generate_summary(output_dir, results):
         anchor = re.sub(r'[^a-z0-9_-]', '', anchor)
         repo_link = f"[{r['repo']}]({GITHUB_URL}/{r['repo']})"
         lines.append(
-            f"| {repo_link} | [{r['score']}](#{anchor}) | {r['blockers']} | {r['infos']} |"
+            f"| {repo_link} | [{r['score']}](#user-content-{anchor}) | {r['blockers']} | {r['infos']} |"
         )
 
     totals = {
