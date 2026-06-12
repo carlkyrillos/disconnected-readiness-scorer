@@ -169,7 +169,7 @@ def generate_summary(output_dir, results):
         anchor = re.sub(r'[^a-z0-9_-]', '', anchor)
         lines += [
             "", f"---", "",
-            f'## <a id="user-content-{anchor}"></a>{heading}',
+            f'## <a id="{anchor}"></a>{heading}',
         ]
         for rule in r["rules"]:
             findings = [f for f in rule.get("findings", []) if f["severity"] != "info"]
